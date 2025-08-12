@@ -1,0 +1,22 @@
+# wordlists/common_communities.txt
+public
+private
+admin
+snmp
+manager
+read
+write
+admin
+cisco
+router
+switch
+network
+security
+monitor
+guest
+default
+password
+snmpd
+snmptrap
+ro
+rw

@@ -1,0 +1,12 @@
+
+[1;33m=== SYSTEM INFORMATION ===[0m
+
+[1;33m=== NETWORK INTERFACES ===[0m
+
+[1;33m=== ARP TABLE ===[0m
+
+[1;33m=== RUNNING PROCESSES ===[0m
+
+[1;33m=== INSTALLED SOFTWARE ===[0m
+
+[1;33m=== STORAGE INFORMATION ===[0m
