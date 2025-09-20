@@ -1,19 +1,20 @@
 #!/bin/bash
 # snmp-strike.sh
 # Authors: ransc0rp1on & 6umi1029
-# Version: 1.0
-# Last Updated: 2023-08-15
+# Version: 1.1
+# Last Updated: 2025-09-21
 
-# Enable debugging mode (set to true for troubleshooting)
+# Enable debugging mode
 DEBUG=false
 
-# Load libraries
+# Load libraries from the 'lib' directory
 source lib/terminal.sh
 source lib/network.sh
 
 # Configuration
 TARGET=""
-INTERFACE=$(get_default_interface)
+# Get default interface and handle potential issues
+INTERFACE=$(get_default_interface) || INTERFACE="eth0"
 WORDLIST="wordlists/common_communities.txt"
 DEFAULT_WORDLIST="wordlists/common_communities.txt"
 VALID_COMMUNITIES=()
@@ -21,10 +22,11 @@ ATTACK_PID=""
 TCPDUMP_PID=""
 ATTACK_RUNNING=false
 
-# Dependency check
+# Function to check for required tools
 check_dependencies() {
     local missing=()
-    local tools=("snmpwalk" "snmpget" "snmpset" "tcpdump" "ping" "timeout" "ip")
+    # Use a common set of tools that should be available on both Debian and Arch
+    local tools=("snmpwalk" "snmpget" "snmpset" "tcpdump" "ping" "timeout" "parallel" "nmap" "ip")
     
     for tool in "${tools[@]}"; do
         if ! command -v "$tool" &> /dev/null; then
@@ -34,51 +36,55 @@ check_dependencies() {
     
     if [ ${#missing[@]} -gt 0 ]; then
         error_msg "Missing dependencies: ${missing[*]}"
-        if confirm_action "Install missing packages?"; then
-            echo "[+] Installing required packages..."
-            sudo apt-get update > /dev/null
-            sudo apt-get install -y snmp snmp-mibs-downloader tcpdump iputils-ping coreutils iproute2
-            return $?
-        else
-            exit 1
-        fi
+        warning_msg "Please run ./install.sh to install missing packages."
+        return 1
     fi
+    success_msg "All required dependencies are installed."
     return 0
 }
 
-# Save valid communities to array
+# Function to save a valid community string to an array
 save_community() {
     local comm="$1"
-    if [[ ! " ${VALID_COMMUNITIES[@]} " =~ " ${comm} " ]]; then
+    # Check if the community string is already in the array before adding
+    local exists=0
+    for c in "${VALID_COMMUNITIES[@]}"; do
+        if [[ "$c" == "$comm" ]]; then
+            exists=1
+            break
+        fi
+    done
+    if [ $exists -eq 0 ]; then
         VALID_COMMUNITIES+=("$comm")
         debug_msg "Saved community: $comm"
     fi
 }
 
-# Cleanup function
+# Function for cleanup on exit or interrupt
 cleanup() {
     debug_msg "Cleaning up..."
     if [ -n "$ATTACK_PID" ]; then
-        kill -9 "$ATTACK_PID" 2>/dev/null
+        kill "$ATTACK_PID" 2>/dev/null
+        debug_msg "Killed attack process (PID: $ATTACK_PID)."
     fi
     if [ -n "$TCPDUMP_PID" ]; then
-        kill -9 "$TCPDUMP_PID" 2>/dev/null
+        sudo kill "$TCPDUMP_PID" 2>/dev/null
+        debug_msg "Killed tcpdump process (PID: $TCPDUMP_PID)."
     fi
     exit 0
 }
 
-# Trap CTRL+C
+# Trap CTRL+C and call the cleanup function
 trap cleanup SIGINT
 
-# Main function
+# Main function of the tool
 main() {
     display_banner
-    check_dependencies || {
-        error_msg "Dependency check failed. Exiting."
-        exit 1
-    }
     
-    # Create outputs directory if not exists
+    # Check dependencies at the start and exit if not found
+    check_dependencies || exit 1
+    
+    # Create outputs directory if it doesn't exist
     mkdir -p outputs
     
     while true; do
@@ -90,25 +96,23 @@ main() {
                 echo -n "Enter target IP: "
                 read -r TARGET
                 
-                # Validate IP format
                 if ! validate_ip "$TARGET"; then
-                    error_msg "Invalid IP address format"
+                    error_msg "Invalid IP address format."
                     TARGET=""
                     continue
                 fi
                 
-                # Check if target is alive
+                # Check if target is alive and has SNMP port open
                 if ! is_alive "$TARGET"; then
-                    warning_msg "Target not responding to ping"
+                    warning_msg "Target not responding to ping."
                     if ! confirm_action "Continue anyway?"; then
                         TARGET=""
                         continue
                     fi
                 fi
                 
-                # Check SNMP port
                 if [ -n "$TARGET" ] && ! is_snmp_open "$TARGET"; then
-                    warning_msg "SNMP port (161) appears closed"
+                    warning_msg "SNMP port (161/udp) appears closed."
                     if ! confirm_action "Continue anyway?"; then
                         TARGET=""
                         continue
@@ -116,7 +120,7 @@ main() {
                 fi
                 
                 if [ -n "$TARGET" ]; then
-                    success_msg "Target set to $TARGET"
+                    success_msg "Target set to $TARGET."
                 fi
                 ;;
             2)
@@ -133,9 +137,9 @@ main() {
                 else
                     source core/bruteforcer.sh
                     
-                    echo -n "Use default wordlist? (y/n): "
+                    echo -n "Use default wordlist? (y/n) [default: y]: "
                     read -r choice
-                    if [[ "$choice" == "n" ]]; then
+                    if [[ "$choice" =~ ^[nN]$ ]]; then
                         echo -n "Enter custom wordlist path: "
                         read -r custom_wordlist
                         if [ ! -f "$custom_wordlist" ]; then
@@ -147,16 +151,7 @@ main() {
                         WORDLIST="$DEFAULT_WORDLIST"
                     fi
                     
-                    echo -n "Use parallel mode? (y/n): "
-                    read -r parallel_choice
-                    if [[ "$parallel_choice" == "y" ]]; then
-                        echo -n "Enter threads (default 10): "
-                        read -r threads
-                        threads=${threads:-10}
-                        parallel_bruteforce "$TARGET" "$WORDLIST" "$threads"
-                    else
-                        brute_force_community "$TARGET" "$WORDLIST"
-                    fi
+                    brute_force_community "$TARGET" "$WORDLIST"
                 fi
                 ;;
             4)
@@ -165,20 +160,18 @@ main() {
                 else
                     source core/enumerator.sh
                     
-                    # Get community string
                     local community=""
                     if [ ${#VALID_COMMUNITIES[@]} -gt 0 ]; then
                         echo "Select community string:"
                         for i in "${!VALID_COMMUNITIES[@]}"; do
                             echo "  $i: ${VALID_COMMUNITIES[$i]}"
                         done
-                        echo -n "Enter index: "
-                        read -r index
-                        if [[ $index =~ ^[0-9]+$ ]] && [ "$index" -lt ${#VALID_COMMUNITIES[@]} ]; then
-                            community="${VALID_COMMUNITIES[$index]}"
+                        echo -n "Enter index or community string: "
+                        read -r input_community
+                        if [[ $input_community =~ ^[0-9]+$ ]] && [ "$input_community" -lt ${#VALID_COMMUNITIES[@]} ]; then
+                            community="${VALID_COMMUNITIES[$input_community]}"
                         else
-                            error_msg "Invalid index"
-                            continue
+                            community="$input_community"
                         fi
                     else
                         echo -n "Enter SNMP community string: "
@@ -198,20 +191,18 @@ main() {
                 else
                     source core/attack_engine.sh
                     
-                    # Get community string
                     local community=""
                     if [ ${#VALID_COMMUNITIES[@]} -gt 0 ]; then
                         echo "Select community string:"
                         for i in "${!VALID_COMMUNITIES[@]}"; do
                             echo "  $i: ${VALID_COMMUNITIES[$i]}"
                         done
-                        echo -n "Enter index: "
-                        read -r index
-                        if [[ $index =~ ^[0-9]+$ ]] && [ "$index" -lt ${#VALID_COMMUNITIES[@]} ]; then
-                            community="${VALID_COMMUNITIES[$index]}"
+                        echo -n "Enter index or community string: "
+                        read -r input_community
+                        if [[ $input_community =~ ^[0-9]+$ ]] && [ "$input_community" -lt ${#VALID_COMMUNITIES[@]} ]; then
+                            community="${VALID_COMMUNITIES[$input_community]}"
                         else
-                            error_msg "Invalid index"
-                            continue
+                            community="$input_community"
                         fi
                     else
                         echo -n "Enter SNMP community string: "
@@ -227,20 +218,18 @@ main() {
                 else
                     source core/vulnerability.sh
                     
-                    # Get community string
                     local community=""
                     if [ ${#VALID_COMMUNITIES[@]} -gt 0 ]; then
                         echo "Select community string:"
                         for i in "${!VALID_COMMUNITIES[@]}"; do
                             echo "  $i: ${VALID_COMMUNITIES[$i]}"
                         done
-                        echo -n "Enter index: "
-                        read -r index
-                        if [[ $index =~ ^[0-9]+$ ]] && [ "$index" -lt ${#VALID_COMMUNITIES[@]} ]; then
-                            community="${VALID_COMMUNITIES[$index]}"
+                        echo -n "Enter index or community string: "
+                        read -r input_community
+                        if [[ $input_community =~ ^[0-9]+$ ]] && [ "$input_community" -lt ${#VALID_COMMUNITIES[@]} ]; then
+                            community="${VALID_COMMUNITIES[$input_community]}"
                         else
-                            error_msg "Invalid index"
-                            continue
+                            community="$input_community"
                         fi
                     else
                         echo -n "Enter SNMP community string: "
