@@ -38,7 +38,7 @@ SNMP-strike is a comprehensive security assessment toolkit designed for testing 
 Clone the repository:
 
 ```bash
-git clone https://github.com/yourusername/SNMP-strike.git
+git clone https://github.com/ransc0rp1on/SNMP-strike.git
 cd SNMP-strike
 ````
 
